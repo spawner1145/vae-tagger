@@ -36,7 +36,8 @@ def load_models(args, device="cuda"):
             'use_spatial_attention': getattr(args, 'use_spatial_attention', True),
             'use_self_attention': getattr(args, 'use_self_attention', True),
             'use_cross_attention': getattr(args, 'use_cross_attention', False),
-            'attention_heads': getattr(args, 'attention_heads', 8)
+            'attention_heads': getattr(args, 'attention_heads', 8),
+            'attention_dropout': getattr(args, 'attention_dropout', 0.1),
         }
         decoder = create_attention_decoder(
             latent_channels=latent_info['latent_channels'],
@@ -166,6 +167,8 @@ if __name__ == "__main__":
                        help="启用交叉注意力")
     parser.add_argument("--attention_heads", type=int, default=8,
                        help="注意力头数")
+    parser.add_argument("--attention_dropout", type=float, default=0.1,
+                       help="注意力dropout率")
     parser.add_argument("--model_checkpoint", type=str, default=None,
                        help="(已弃用) 包含VAE和Decoder权重的父目录，将自动拆分为vae_checkpoint和decoder_checkpoint")
     
