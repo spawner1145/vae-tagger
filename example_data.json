@@ -1,0 +1,6 @@
+{
+    "images/sample1.jpg": "anime:1.0, girl:0.9, blue_hair:0.8",
+    "images/sample2.png": "realistic:1.0, landscape:0.9, mountain:0.7, sunset:0.8",
+    "images/sample3.jpg": "anime:1.0, boy:0.9, school_uniform:0.7",
+    "images/sample4.png": "anime:1.0, girl:0.9, red_hair:0.8, smile:0.6"
+}
