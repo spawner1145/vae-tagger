@@ -20,7 +20,7 @@ python create_test_dataset.py --source_json your_data.json --output_dir test_dat
 **选项 A: 简单端到端训练 (推荐)**
 ```bash
 python train_full.py \
-    # 这边的vae的safetensors和json文件可以在 https://huggingface.co/black-forest-labs/FLUX.1-dev/tree/main/vae 下载
+    # 这边的vae的safetensors和json文件可以在 https://huggingface.co/black-forest-labs/FLUX.1-dev/tree/main/vae 下载，开头三个都是可选参数
     --vae_checkpoint diffusion_pytorch_model.safetensors \
     --vae_config_path diffusers_vae_config.json \
     --decoder_checkpoint decoder_checkpoint/best_pytorch_model.bin \
