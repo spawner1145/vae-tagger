@@ -34,6 +34,8 @@ def train_full(args):
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = args.cudnn_benchmark
         torch.backends.cudnn.deterministic = args.cudnn_deterministic
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     accelerator = Accelerator(mixed_precision=args.mixed_precision, project_dir=args.output_dir)
     if args.vae_config_path and os.path.exists(args.vae_config_path):
         print(f"从配置文件创建VAE: {args.vae_config_path}")

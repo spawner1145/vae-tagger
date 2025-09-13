@@ -267,9 +267,14 @@ def get_image_paths(path):
     supported_extensions = ['.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp']
     
     if os.path.isdir(path):
+        # 去重收集（避免大小写重复与多次匹配）
+        found = set()
         for ext in supported_extensions:
-            image_paths.extend(Path(path).rglob(f'*{ext}'))
-            image_paths.extend(Path(path).rglob(f'*{ext.upper()}'))
+            for p in Path(path).rglob(f'*{ext}'):
+                found.add(p.resolve())
+            for p in Path(path).rglob(f'*{ext.upper()}'):
+                found.add(p.resolve())
+        image_paths = list(found)
     elif os.path.isfile(path):
         if any(path.lower().endswith(ext) for ext in supported_extensions):
             image_paths.append(Path(path))
@@ -387,7 +392,8 @@ class AttentionClassificationDecoder(nn.Module):
         # cross attn（可选）
         if use_cross_attention:
             self.cross_attention = CrossAttention(
-                query_dim=512, key_dim=compressed_dim, embed_dim=256, num_heads=attention_heads
+                # key_dim 应与 spatial_features 的最后一维一致，这里为压缩后的通道数 latent_channels//2
+                query_dim=512, key_dim=latent_channels // 2, embed_dim=256, num_heads=attention_heads
             )
             print("启用cross attn机制")
         
@@ -489,6 +495,7 @@ class TaggedImageDataset(Dataset):
         self.idx_to_tag = {i: tag for tag, i in self.tag_to_idx.items()}
         self.transform = transform
         self.image_paths = list(self.data.keys())
+        self._path_to_index = {p: i for i, p in enumerate(self.image_paths)}
         
         # 分桶
         self.use_bucketing = use_bucketing
@@ -497,8 +504,10 @@ class TaggedImageDataset(Dataset):
             self.bucketing = AspectRatioBucketing(base_resolution, max_resolution, bucket_step)
             self._analyze_images()
             self.bucketing.print_bucket_info()
+            self._bucket_transform_cache = {}
         else:
             self.bucketing = None
+            self._bucket_transform_cache = None
 
         self.image_labels = {}
         for path, prompt in self.data.items():
@@ -587,17 +596,22 @@ class TaggedImageDataset(Dataset):
         #    for combo, count in sorted_combos:
         #        print(f"{', '.join(combo)}: {count} 张图像")
     
-    def _online_triplet_mining(self, anchor_path, anchor_labels, max_candidates=100):
+    def _online_triplet_mining(self, anchor_idx, anchor_labels, max_candidates=100):
         """在线三元组挖掘"""
         anchor_tag_count = anchor_labels.sum().item()
         positive_paths = []
         negative_paths = []
         
-        # 随机采样一部分候选样本进行比较
-        candidate_paths = random.sample(
-            [p for p in self.image_paths if p != anchor_path], 
-            min(max_candidates, len(self.image_paths) - 1)
-        )
+        N = len(self.image_paths)
+        K = min(max_candidates, max(0, N - 1))
+        if K <= 0:
+            return positive_paths, negative_paths
+        candidate_indices = set()
+        while len(candidate_indices) < K:
+            j = random.randrange(0, N)
+            if j != anchor_idx:
+                candidate_indices.add(j)
+        candidate_paths = [self.image_paths[j] for j in candidate_indices]
         
         for other_path in candidate_paths:
             overlap = (self.image_labels[other_path] * anchor_labels).sum().item()
@@ -615,10 +629,13 @@ class TaggedImageDataset(Dataset):
         anchor_path = self.image_paths[idx]
         anchor_labels = self.image_labels[anchor_path]
         anchor_img = self._load_and_transform(anchor_path)
-        positive_path, negative_path = self._sample_triplet_paths(anchor_path, anchor_labels)
+        positive_path, negative_path = self._sample_triplet_paths(idx, anchor_labels)
         
         positive_img = self._load_and_transform(positive_path)
         negative_img = self._load_and_transform(negative_path)
+
+        positive_labels = self.image_labels.get(positive_path, anchor_labels)
+        negative_labels = self.image_labels.get(negative_path, torch.zeros_like(anchor_labels))
 
         return {
             "pixel_values": anchor_img,
@@ -626,11 +643,14 @@ class TaggedImageDataset(Dataset):
             "anchor": anchor_img,
             "positive": positive_img,
             "negative": negative_img,
+            "positive_labels": positive_labels,
+            "negative_labels": negative_labels,
         }
     
-    def _sample_triplet_paths(self, anchor_path, anchor_labels):
+    def _sample_triplet_paths(self, anchor_idx, anchor_labels):
+        anchor_path = self.image_paths[anchor_idx]
         anchor_tag_count = anchor_labels.sum().item()
-        positive_paths, negative_paths = self._online_triplet_mining(anchor_path, anchor_labels)
+        positive_paths, negative_paths = self._online_triplet_mining(anchor_idx, anchor_labels)
         if anchor_tag_count > 1 and positive_paths:
             positive_scores = []
             for path in positive_paths:
@@ -654,9 +674,14 @@ class TaggedImageDataset(Dataset):
         if negative_paths:
             negative_path = random.choice(negative_paths)
         else:
-            # 如果找不到负样本，随机选择一个不同的图像
-            possible_paths = [p for p in self.image_paths if p != anchor_path]
-            negative_path = random.choice(possible_paths) if possible_paths else anchor_path
+            # 如果找不到负样本，随机选择一个不同的索引
+            if len(self.image_paths) > 1:
+                j = anchor_idx
+                while j == anchor_idx:
+                    j = random.randrange(0, len(self.image_paths))
+                negative_path = self.image_paths[j]
+            else:
+                negative_path = anchor_path
             
         return positive_path, negative_path
         
@@ -669,12 +694,14 @@ class TaggedImageDataset(Dataset):
                 if bucket:
                     # 动态分桶resize
                     width, height = bucket
-                    smart_transform = transforms.Compose([
-                        SmartResize(width, height, crop_mode='center'),
-                        transforms.ToTensor(),
-                        transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
-                    ])
-                    return smart_transform(img)
+                    # 从缓存获取/创建对应桶的变换
+                    if bucket not in self._bucket_transform_cache:
+                        self._bucket_transform_cache[bucket] = transforms.Compose([
+                            SmartResize(width, height, crop_mode='center'),
+                            transforms.ToTensor(),
+                            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+                        ])
+                    return self._bucket_transform_cache[bucket](img)
                 elif self.transform:
                     return self.transform(img)
                 else:

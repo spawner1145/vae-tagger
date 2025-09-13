@@ -54,7 +54,11 @@ def infer_and_save_latents(args):
             try:
                 img = Image.open(img_path).convert("RGB")
                 processed_img = transform(img).unsqueeze(0).to(device)
-                latent = vae_model.encode(processed_img)
+                if device == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.float16):
+                        latent = vae_model.encode(processed_img)
+                else:
+                    latent = vae_model.encode(processed_img)
                 flattened_latent = latent.reshape(latent.size(0), -1).squeeze(0).cpu().numpy()
                 
                 latent_data[str(img_path)] = flattened_latent.tolist()

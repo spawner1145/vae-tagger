@@ -95,8 +95,13 @@ def infer_and_classify(args):
             try:
                 img = Image.open(img_path).convert("RGB")
                 processed_img = transform(img).unsqueeze(0).to(device)
-                latent = vae_model.encode(processed_img)
-                sorted_confidences, indices = decoder.get_confidence(latent)
+                if device == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.float16):
+                        latent = vae_model.encode(processed_img)
+                        sorted_confidences, indices = decoder.get_confidence(latent)
+                else:
+                    latent = vae_model.encode(processed_img)
+                    sorted_confidences, indices = decoder.get_confidence(latent)
                 predicted_tags = []
                 all_predictions = []
                 
