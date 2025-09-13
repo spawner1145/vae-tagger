@@ -2,6 +2,8 @@ import argparse
 import os
 import torch
 import torch.nn.functional as F
+import random
+import numpy as np
 from accelerate import Accelerator
 from diffusers.optimization import get_scheduler
 from torchvision import transforms
@@ -16,8 +18,20 @@ from diffusers_vae_loader import (
 from torch.optim import AdamW
 import json
 
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
 def train_vae(args):
     os.makedirs(args.output_dir, exist_ok=True)
+    if args.seed is not None:
+        set_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.backends.cudnn.benchmark = args.cudnn_benchmark
+        torch.backends.cudnn.deterministic = args.cudnn_deterministic
     accelerator = Accelerator(mixed_precision=args.mixed_precision, project_dir=args.output_dir)
     if args.vae_config_path and os.path.exists(args.vae_config_path):
         print(f"从配置文件创建VAE: {args.vae_config_path}")
@@ -60,8 +74,24 @@ def train_vae(args):
     
     train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
     
-    train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=args.train_batch_size, shuffle=True, pin_memory=True)
-    val_dataloader = torch.utils.data.DataLoader(val_dataset, batch_size=args.train_batch_size, shuffle=False, pin_memory=True)
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        batch_size=args.train_batch_size,
+        shuffle=True,
+        pin_memory=True,
+        num_workers=args.num_workers,
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+        persistent_workers=True if args.num_workers > 0 else False,
+    )
+    val_dataloader = torch.utils.data.DataLoader(
+        val_dataset,
+        batch_size=args.train_batch_size,
+        shuffle=False,
+        pin_memory=True,
+        num_workers=max(1, args.num_workers // 2),
+        prefetch_factor=args.prefetch_factor if args.num_workers > 0 else None,
+        persistent_workers=True if args.num_workers > 0 else False,
+    )
     
     print(f"训练集大小: {train_size}, 验证集大小: {val_size}")
     
@@ -304,6 +334,13 @@ if __name__ == "__main__":
     parser.add_argument("--base_resolution", type=int, default=512, help="分桶的基础分辨率")
     parser.add_argument("--max_resolution", type=int, default=1024, help="分桶的最大分辨率")
     parser.add_argument("--bucket_step", type=int, default=64, help="分桶的步长")
+
+    # 数据加载/稳定性
+    parser.add_argument("--num_workers", type=int, default=4, help="DataLoader 工作线程数")
+    parser.add_argument("--prefetch_factor", type=int, default=2, help="DataLoader 预取倍数（每个worker）")
+    parser.add_argument("--seed", type=int, default=42, help="随机种子")
+    parser.add_argument("--cudnn_benchmark", action="store_true", help="启用cudnn benchmark以提高卷积性能（输入尺寸固定时建议开启）")
+    parser.add_argument("--cudnn_deterministic", action="store_true", help="启用确定性cuDNN以提高复现性（可能降低性能）")
     
     args = parser.parse_args()
     train_vae(args)

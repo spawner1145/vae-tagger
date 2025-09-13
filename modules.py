@@ -129,14 +129,14 @@ def get_image_transform(resolution, use_bucketing=False, aspect_ratio_bucket=Non
         return transforms.Compose([
             SmartResize(target_width, target_height),
             transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5])
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
         ])
     else:
         # 传统的正方形resize（会变形）
         return transforms.Compose([
             transforms.Resize((resolution, resolution)),
             transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5])
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
         ])
 
 class SmartResize:
@@ -368,13 +368,6 @@ class AttentionClassificationDecoder(nn.Module):
             self.spatial_attention = SpatialAttention(latent_channels)
             print("启用spatial attn机制")
         
-        # self attn
-        if use_self_attention:
-            self.self_attention = MultiHeadSelfAttention(
-                latent_channels, num_heads=attention_heads, dropout=attention_dropout
-            )
-            print("启用多头self attn机制")
-        
         # 特征维度压缩
         self.feature_compress = nn.Sequential(
             nn.Conv2d(latent_channels, latent_channels // 2, 3, 1, 1),
@@ -384,6 +377,12 @@ class AttentionClassificationDecoder(nn.Module):
         )
         
         compressed_dim = (latent_channels // 2) * 64  # 8 * 8
+
+        if use_self_attention:
+            self.self_attention_post = MultiHeadSelfAttention(
+                embed_dim=latent_channels // 2, num_heads=attention_heads, dropout=attention_dropout
+            )
+            print("启用多头self attn机制（8x8压缩后）")
         
         # cross attn（可选）
         if use_cross_attention:
@@ -428,16 +427,16 @@ class AttentionClassificationDecoder(nn.Module):
             if not self._debug_once:
                 print(f"spatial attn后: {x.shape}")
         
-        # self attn
-        if self.use_self_attention:
-            x = self.self_attention(x)
-            if not self._debug_once:
-                print(f"self attn后: {x.shape}")
-        
         # 特征压缩
         x = self.feature_compress(x)
         if not self._debug_once:
             print(f"特征压缩后: {x.shape}")
+
+        # 在8x8上self attn
+        if self.use_self_attention:
+            x = self.self_attention_post(x)
+            if not self._debug_once:
+                print(f"post self attn后: {x.shape}")
         
         # 展平特征
         flattened = x.reshape(batch_size, -1)
@@ -673,7 +672,7 @@ class TaggedImageDataset(Dataset):
                     smart_transform = transforms.Compose([
                         SmartResize(width, height, crop_mode='center'),
                         transforms.ToTensor(),
-                        transforms.Normalize([0.5], [0.5])
+                        transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
                     ])
                     return smart_transform(img)
                 elif self.transform:
@@ -682,7 +681,7 @@ class TaggedImageDataset(Dataset):
                     default_transform = transforms.Compose([
                         transforms.Resize((512, 512)),
                         transforms.ToTensor(),
-                        transforms.Normalize([0.5], [0.5])
+                        transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
                     ])
                     return default_transform(img)
             else:
